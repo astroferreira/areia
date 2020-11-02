@@ -141,14 +141,14 @@ def generate_circular_kernel(d):
 
     return mask
 
-def central_segmentation_map(data, std_level=3, min_size=0.01):
+def central_segmentation_map(data, std_level=3, min_size=0.05):
     
     mean, median, std = measure_background(data, 2, np.zeros_like(data))
     threshold = median + (std_level*std)
 
     zp = int(np.round(data.shape[0]/2))
 
-    npixels = np.min([int((data.shape[0] * min_size) **2), 5])
+    npixels = np.max([int((data.shape[0] * min_size) **2), 5])
     seg_map = detect_sources(data, threshold, npixels=npixels).data
     central_source_mask = np.zeros_like(seg_map)
     central_source_mask[np.where(seg_map == seg_map[zp, zp])] = 1
