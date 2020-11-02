@@ -37,9 +37,10 @@ class Config(object):
     make_cutout = True
     dimming = True
     shot_noise = True
-    size_correction = False
-    evo = False
+    size_correction = True
+    evo = True
     evo_alpha = -1
+    output_size = 60
 
 class ObservationFrame(object):
     '''
@@ -83,6 +84,7 @@ class ArtificialRedshift(object):
         self.convolve_psf()
         self.apply_shot_noise()
         self.add_background()
+        self.crop_for_network(size=self.config.output_size  )
 
     @classmethod
     def fromrawdata(cls, image,
@@ -121,7 +123,7 @@ class ArtificialRedshift(object):
         self.flux = self.final.sum()
         self.rebinned = self.final / self.flux
 
-        if self.config.rebinning:                                                  
+        if self.config.rebinning:           
             initial_distance = self.cosmo.luminosity_distance(self.initial_frame.redshift).value   
             target_distance = self.cosmo.luminosity_distance(self.target_frame.redshift).value   
             self.scale_factor = (initial_distance * (1 + self.target_frame.redshift)**2 * self.initial_frame.pixelscale) / (target_distance * (1 + self.initial_frame.redshift)**2 * self.target_frame.pixelscale)
@@ -145,6 +147,7 @@ class ArtificialRedshift(object):
 
         if self.config.dimming:
             self.dimming_factor = (self.cosmo.luminosity_distance(self.initial_frame.redshift) / self.cosmo.luminosity_distance(self.target_frame.redshift))**2
+            self.dimming_factor = self.dimming_factor.value
             self.dimmed = self.final * self.dimming_factor
             self.final = self.dimmed.copy()
 
@@ -178,15 +181,31 @@ class ArtificialRedshift(object):
 
     def add_background(self):
 
+        def _find_bg_section(bg, img):
+    
+            a, b = bg.shape
+            c, d = img.shape
+
+            if((c <= a) & (d <= b)):
+                x = np.random.randint(0, a-c)
+                y = np.random.randint(0, b-d)
+            else:
+                raise(IndexError('Galaxy Image larger than BG'))
+            
+            bg_section = bg[x:(x+c), y:(y+d)]
+
+            return bg_section
+
         if self.config.add_background:
             if self.background is None:
-
                 background_shape = self.image.shape
                 if self.scale_factor > 1:
                     background_shape = self.final.shape
                 
                 mean, median, std = measure_background(self.image, 2, np.zeros((background_shape)))
                 self.background = np.random.normal(0, std, size=background_shape)
+            else:
+                self.background = _find_bg_section(self.background, self.image) if self.scale_factor <= 1 else _find_bg_section(self.background, self.final)
 
             source_shape = self.final.shape
             
@@ -198,12 +217,50 @@ class ArtificialRedshift(object):
                 if source_shape[0] % 2 == 0:
                     offset = 0
 
-                offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) - offset
-                offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) 
+                offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) 
+                offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) + offset
 
             self.with_background = self.background.copy()
             self.with_background[offset_min:offset_max, offset_min:offset_max] += self.with_shot_noise
             self.final = self.with_background.copy()
+
+    def crop_for_network(self, size):
+
+        half_size = int(size/2)
+        xc = int(self.final.shape[0]/2)
+        yc = int(self.final.shape[1]/2)
+
+        self.final_crop = self.final[yc-half_size:yc+half_size, xc-half_size:xc+half_size]
+
+
+    def writeto(self, filepath, overwrite=False):
+
+        hdr = fits.Header()
+
+        if self.config.rebinning:
+            hdr['REBIN'] = self.scale_factor
+        
+        if self.config.dimming:
+            hdr['DIM_FACT'] = self.dimming_factor
+
+        if self.config.evo:
+            hdr['EVO_FACT'] = self.evo_factor
+            hdr['EV_ALPHA'] = self.config.evo_alpha
+
+        hdr['HISTORY'] = 'Image simulated with AREIA: Artificial Redshift Effects for IA'
+        hdr['HISTORY'] = 'Source Extracted with Galclean'
+        hdr['HISTORY'] = f'From z = {self.initial_frame.redshift} to z = {self.target_frame.redshift}'
+        hdr['HISTORY'] = 'Any issues forward it to leonardo.ferreira@nottingham.ac.uk'
+        hdr['HISTORY'] = 'Or seek help at https://github.com/astroferreira/areia'
+
+        fits.writeto(filename=filepath, data=self.final_crop, header=hdr, overwrite=overwrite)
+        
+
+
+
+
+
+
 
 
 
