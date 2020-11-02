@@ -37,7 +37,7 @@ class Config(object):
     make_cutout = True
     dimming = True
     shot_noise = True
-    size_correction = True
+    size_correction = False
     evo = False
     evo_alpha = -1
 
@@ -115,7 +115,12 @@ class ArtificialRedshift(object):
         def _size_correction(redshift):
             return (1 + redshift)**(-0.97)
 
+        self.scale_factor = 1
         self.size_correction_factor = 1
+        
+        self.flux = self.final.sum()
+        self.rebinned = self.final / self.flux
+
         if self.config.rebinning:                                                  
             initial_distance = self.cosmo.luminosity_distance(self.initial_frame.redshift).value   
             target_distance = self.cosmo.luminosity_distance(self.target_frame.redshift).value   
@@ -124,13 +129,16 @@ class ArtificialRedshift(object):
             if self.config.size_correction:
                 self.size_correction_factor = _size_correction(self.target_frame.redshift)
 
-            self.rebinned = zoom(self.image, self.scale_factor * self.size_correction_factor, prefilter=True)
+            self.rebinned = zoom(self.rebinned, self.scale_factor * self.size_correction_factor, order=0, prefilter=True)
+            self.rebinned /= self.rebinned.sum()
+            self.rebinned *= self.flux
+            
             self.final = self.rebinned.copy()
         else:
             if self.config.size_correction:
                 self.size_correction_factor = _size_correction(self.target_frame.redshift)
 
-                self.rebinned = zoom(self.image, self.size_correction_factor, prefilter=True) 
+                self.rebinned = zoom(self.final, self.size_correction_factor, prefilter=True) 
                 self.final = self.rebinned.copy()
 
     def apply_dimming(self):
@@ -152,8 +160,13 @@ class ArtificialRedshift(object):
     def convolve_psf(self):
         
         if self.config.convolve_with_psf:
+            
+            original_flux = self.final.sum()
+
+            self.psf /= self.psf.sum()
             self.convolved = convolve(self.final, self.psf)   
             self.final = self.convolved.copy()
+
         
     def apply_shot_noise(self):         
         
@@ -168,17 +181,25 @@ class ArtificialRedshift(object):
         if self.config.add_background:
             if self.background is None:
 
-                mean, median, std = measure_background(self.image, 2, np.zeros_like(self.image))
-                self.background = np.random.normal(mean, std, size=self.image.shape)
+                background_shape = self.image.shape
+                if self.scale_factor > 1:
+                    background_shape = self.final.shape
+                
+                mean, median, std = measure_background(self.image, 2, np.zeros((background_shape)))
+                self.background = np.random.normal(0, std, size=background_shape)
 
-            source_shape = self.with_shot_noise.shape
+            source_shape = self.final.shape
             
-            offset = 1
-            if source_shape[0] % 2 == 0:
-                offset = 0
+            if self.scale_factor == 1:
+                offset_min = 0
+                offset_max = self.image.shape[0]
+            else:
+                offset = 1
+                if source_shape[0] % 2 == 0:
+                    offset = 0
 
-            offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) - offset
-            offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) 
+                offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) - offset
+                offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) 
 
             self.with_background = self.background.copy()
             self.with_background[offset_min:offset_max, offset_min:offset_max] += self.with_shot_noise
