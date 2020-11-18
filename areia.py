@@ -233,7 +233,7 @@ class ArtificialRedshift(object):
         self.final_crop = self.final[yc-half_size:yc+half_size, xc-half_size:xc+half_size]
 
 
-    def writeto(self, filepath, overwrite=False):
+    def writeto(self, filepath, data, overwrite=False):
 
         hdr = fits.Header()
 
@@ -253,7 +253,7 @@ class ArtificialRedshift(object):
         hdr['HISTORY'] = 'Any issues forward it to leonardo.ferreira@nottingham.ac.uk'
         hdr['HISTORY'] = 'Or seek help at https://github.com/astroferreira/areia'
 
-        fits.writeto(filename=filepath, data=self.final_crop, header=hdr, overwrite=overwrite)
+        fits.writeto(filename=filepath, data=data, header=hdr, overwrite=overwrite)
         
 
 
