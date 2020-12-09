@@ -39,8 +39,8 @@ class Config(object):
     shot_noise = True
     size_correction = True
     evo = True
-    evo_alpha = -1
-    output_size = 60
+    evo_alpha = -0.13
+    output_size = 128
 
 class ObservationFrame(object):
     '''
@@ -64,13 +64,14 @@ class ArtificialRedshift(object):
         debugging.
     '''
 
-    def __init__(self, image, psf, background, initial_frame, target_frame, config=None):
+    def __init__(self, image, psf, background, initial_frame, target_frame, MAG, config=None):
 
         self.image = image
         self.psf = psf
         self.background = background
         self.initial_frame = initial_frame
         self.target_frame = target_frame
+        self.MAG = MAG
 
         if config is None:
             self.config = Config()
@@ -152,13 +153,20 @@ class ArtificialRedshift(object):
             self.final = self.dimmed.copy()
 
 
-    def evolution_correction(self):
+    def flat_evolution_correction(self):
         
         if self.config.evo:
             self.evo_factor = 10**(-0.4 * self.config.evo_alpha * (self.target_frame.redshift))
             self.with_evolution = self.final * self.evo_factor
             self.final = self.with_evolution.copy()
 
+    def evolution_correction(self):
+        
+        if self.config.evo:
+            self.mag_correction = (self.MAG - self.MAG*(1 + self.target_frame.redshift)**(-self.config.evo_alpha))
+            self.evo_factor = 10**(-0.4 * self.mag_correction)
+            self.with_evolution = self.final * self.evo_factor
+            self.final = self.with_evolution.copy()
 
     def convolve_psf(self):
         
