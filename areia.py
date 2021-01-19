@@ -163,7 +163,7 @@ class ArtificialRedshift(object):
     def evolution_correction(self):
         
         if self.config.evo:
-            self.mag_correction = (self.MAG - self.MAG*(1 + self.target_frame.redshift)**(-self.config.evo_alpha))
+            self.mag_correction = (self.MAG - self.MAG*(1 + self.target_frame.redshift)**(self.config.evo_alpha))
             self.evo_factor = 10**(-0.4 * self.mag_correction)
             self.with_evolution = self.final * self.evo_factor
             self.final = self.with_evolution.copy()
