@@ -16,7 +16,7 @@ from astropy import units as u
 
 from photutils import detect_sources, detect_threshold
 
-from galclean import central_segmentation_map, measure_background
+from .galclean import central_segmentation_map, measure_background
 
 from scipy.ndimage import zoom
 
@@ -41,6 +41,7 @@ class Config(object):
     evo = True
     evo_alpha = -0.13
     output_size = 128
+    bg_centered = True
 
 class ObservationFrame(object):
     '''
@@ -75,8 +76,12 @@ class ArtificialRedshift(object):
 
         if config is None:
             self.config = Config()
+        else:
+            self.config = config
 
         self.cosmo = self.config.cosmo
+
+        self.final = self.image
 
         self.cutout_source() 
         self.geometric_rebinning() 
@@ -189,18 +194,24 @@ class ArtificialRedshift(object):
 
     def add_background(self):
 
-        def _find_bg_section(bg, img):
+        def _find_bg_section(bg, img, CENTER=False):
     
             a, b = bg.shape
             c, d = img.shape
 
-            if((c <= a) & (d <= b)):
-                x = np.random.randint(0, a-c)
-                y = np.random.randint(0, b-d)
+            if CENTER:
+                xi = int(a/2 - c/2)
+                xf = int(b/2 + d/2)
+                
+                bg_section = bg[xi:xf, xi:xf] 
             else:
-                raise(IndexError('Galaxy Image larger than BG'))
-            
-            bg_section = bg[x:(x+c), y:(y+d)]
+                if((c <= a) & (d <= b)):
+                    x = np.random.randint(0, a-c)
+                    y = np.random.randint(0, b-d)
+                else:
+                    raise(IndexError('Galaxy Image larger than BG'))
+                
+                bg_section = bg[x:(x+c), y:(y+d)]
 
             return bg_section
 
@@ -213,8 +224,9 @@ class ArtificialRedshift(object):
                 mean, median, std = measure_background(self.image, 2, np.zeros((background_shape)))
                 self.background = np.random.normal(0, std, size=background_shape)
             else:
-                self.background = _find_bg_section(self.background, self.image) if self.scale_factor <= 1 else _find_bg_section(self.background, self.final)
+                self.background = _find_bg_section(self.background, self.final, CENTER=self.config.bg_centered) if self.scale_factor <= 1 else _find_bg_section(self.background, self.final, CENTER=self.config.bg_centered)
 
+            print(self.background.shape)
             source_shape = self.final.shape
             
             if self.scale_factor == 1:
@@ -229,7 +241,12 @@ class ArtificialRedshift(object):
                 offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) + offset
 
             self.with_background = self.background.copy()
-            self.with_background[offset_min:offset_max, offset_min:offset_max] += self.with_shot_noise
+
+            if self.config.bg_centered:
+                self.with_background += self.final
+            else:
+                self.with_background[offset_min:offset_max, offset_min:offset_max] += self.final
+            
             self.final = self.with_background.copy()
 
     def crop_for_network(self, size):
