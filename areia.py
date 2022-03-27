@@ -1,6 +1,6 @@
 __title__ = 'AREIA: Artificial Redshift Effects for IA'
 __author__ = 'Leonardo Ferreira & Clar-Brid Tohill'
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 import sys
 import argparse
@@ -19,8 +19,34 @@ from photutils import detect_sources, detect_threshold
 from .galclean import central_segmentation_map, measure_background
 
 from scipy.ndimage import zoom
+from scipy.interpolate import interpn
 
 from matplotlib import pyplot as plt
+
+
+def zoom_contents(image, scale, image_axes=[0, 1], method='linear', conserve_flux=True, fill_value=0):
+    """
+       Change the scale with fixed image size. Implemmentation by Aiden Rolfe (aidenrolfe) and
+       Stephen Bamford (bamford) from https://github.com/aidenrolfe/ARG.
+
+       Suggestion by Bamford in Issue https://github.com/astroferreira/areia/issues/1
+    """
+    # Resize contents of image relative to fixed image size using interpolation
+    in_coords = [np.arange(s) - (s - 1) / 2 for s in image.shape]
+    out_coords = np.array(np.meshgrid(*in_coords, indexing='ij'))
+    # match shape of input scale to allow broadcasting
+    scale = np.atleast_1d(scale)
+    scale = scale.reshape(scale.shape + (1,) * (image.ndim - scale.ndim))
+    out_coords[image_axes] /= scale
+    out_coords = np.transpose(out_coords)
+    output = interpn(in_coords, image, out_coords,
+                     method=method, bounds_error=False, fill_value=fill_value)
+    output = output.T
+    if conserve_flux:
+        output /= scale**2
+
+    return output
+
 
 
 class Config(object):
@@ -40,8 +66,9 @@ class Config(object):
     size_correction = True
     evo = True
     evo_alpha = -0.13
-    output_size = 128
+    output_size = 101
     bg_centered = True
+    fixed_grid = True
 
 class ObservationFrame(object):
     '''
@@ -54,7 +81,6 @@ class ObservationFrame(object):
         self.redshift = redshift
         self.exptime = exptime
 
-
 class ArtificialRedshift(object):
     '''
         This handles all transformations and effects selected
@@ -65,7 +91,8 @@ class ArtificialRedshift(object):
         debugging.
     '''
 
-    def __init__(self, image, psf, background, initial_frame, target_frame, MAG, config=None):
+    def __init__(self, image, psf, background, initial_frame, target_frame, MAG, bg_position=None, 
+                 config=None):
 
         self.image = image
         self.psf = psf
@@ -73,6 +100,7 @@ class ArtificialRedshift(object):
         self.initial_frame = initial_frame
         self.target_frame = target_frame
         self.MAG = MAG
+        self.bg_position = bg_position
 
         if config is None:
             self.config = Config()
@@ -90,7 +118,8 @@ class ArtificialRedshift(object):
         self.convolve_psf()
         self.apply_shot_noise()
         self.add_background()
-        self.crop_for_network(size=self.config.output_size  )
+        self.crop_for_network(size=self.config.output_size)
+       #self.to_candelizer()
 
     @classmethod
     def fromrawdata(cls, image,
@@ -133,21 +162,18 @@ class ArtificialRedshift(object):
             initial_distance = self.cosmo.luminosity_distance(self.initial_frame.redshift).value   
             target_distance = self.cosmo.luminosity_distance(self.target_frame.redshift).value   
             self.scale_factor = (initial_distance * (1 + self.target_frame.redshift)**2 * self.initial_frame.pixelscale) / (target_distance * (1 + self.initial_frame.redshift)**2 * self.target_frame.pixelscale)
-            
-            if self.config.size_correction:
-                self.size_correction_factor = _size_correction(self.target_frame.redshift)
-
-            self.rebinned = zoom(self.rebinned, self.scale_factor * self.size_correction_factor, order=0, prefilter=True)
-            self.rebinned /= self.rebinned.sum()
-            self.rebinned *= self.flux
-            
-            self.final = self.rebinned.copy()
+        
+        if self.config.size_correction:
+            self.size_correction_factor = _size_correction(self.target_frame.redshift)
+        
+        if self.config.fixed_grid:
+            self.rebinned = zoom_contents(self.rebinned, self.scale_factor * self.size_correction_factor, conserve_flux=False)
         else:
-            if self.config.size_correction:
-                self.size_correction_factor = _size_correction(self.target_frame.redshift)
-
-                self.rebinned = zoom(self.final, self.size_correction_factor, prefilter=True) 
-                self.final = self.rebinned.copy()
+            self.rebinned = zoom(self.rebinned, self.scale_factor * self.size_correction_factor, order=0, prefilter=True)
+            
+        self.rebinned /= self.rebinned.sum()
+        self.rebinned *= self.flux
+        self.final = self.rebinned.copy()
 
     def apply_dimming(self):
 
@@ -187,75 +213,76 @@ class ArtificialRedshift(object):
     def apply_shot_noise(self):         
         
         if self.config.shot_noise:
-            self.shot_noise = np.sqrt(abs(self.convolved * self.target_frame.exptime)) * np.random.randn(self.convolved.shape[0], self.convolved.shape[1]) / self.target_frame.exptime         
+            self.shot_noise = np.sqrt(abs(self.final * self.target_frame.exptime)) * np.random.randn(self.final.shape[0], self.final.shape[1]) / self.target_frame.exptime         
             self.with_shot_noise = self.final + self.shot_noise
             self.final = self.with_shot_noise.copy()
 
 
-    def add_background(self):
-
-        def _find_bg_section(bg, img, CENTER=False):
+    def _find_bg_section(self, bg, img, CENTER=False):
     
-            a, b = bg.shape
-            c, d = img.shape
-
-            if CENTER:
-                xi = int(a/2 - c/2)
-                xf = int(b/2 + d/2)
-                
-                bg_section = bg[xi:xf, xi:xf] 
-            else:
+        a, b = bg.shape
+        c, d = img.shape 
+        c = int(c)
+        d = int(d)
+        if CENTER:
+            xi = int(a/2 - c/2)
+            xf = int(b/2 + d/2)
+            bg_section = bg[xi:xf, xi:xf] 
+        else:
+            if self.bg_position is None:
                 if((c <= a) & (d <= b)):
                     x = np.random.randint(0, a-c)
                     y = np.random.randint(0, b-d)
                 else:
                     raise(IndexError('Galaxy Image larger than BG'))
-                
-                bg_section = bg[x:(x+c), y:(y+d)]
+            else:
+                x, y = self.bg_position
 
-            return bg_section
+            bg_section = bg[x:(x+c), y:(y+d)]
+
+        return bg_section
+
+    def add_background(self):
+
+
 
         if self.config.add_background:
             if self.background is None:
-                background_shape = self.image.shape
+                background_shape = self.final.shape
                 if self.scale_factor > 1:
                     background_shape = self.final.shape
                 
-                mean, median, std = measure_background(self.image, 2, np.zeros((background_shape)))
+                mean, median, std = measure_background(self.final, 2, np.zeros((background_shape)))
                 self.background = np.random.normal(0, std, size=background_shape)
             else:
-                self.background = _find_bg_section(self.background, self.final, CENTER=self.config.bg_centered) if self.scale_factor <= 1 else _find_bg_section(self.background, self.final, CENTER=self.config.bg_centered)
-
-            print(self.background.shape)
+                self.background = self._find_bg_section(self.background, self.final, CENTER=self.config.bg_centered) if self.scale_factor <= 1 else self._find_bg_section(self.background, self.final, CENTER=self.config.bg_centered)
+                
             source_shape = self.final.shape
             
-            if self.scale_factor == 1:
-                offset_min = 0
-                offset_max = self.image.shape[0]
-            else:
-                offset = 1
-                if source_shape[0] % 2 == 0:
-                    offset = 0
+            offset = 1
+            if source_shape[0] % 2 == 0:
+                offset = 0
 
-                offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) 
-                offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) + offset
+            offset_min = int(self.background.shape[0]/2) - int(np.floor(source_shape[0]/2)) 
+            offset_max = int(self.background.shape[0]/2) + int(np.floor(source_shape[0]/2)) + offset
+
 
             self.with_background = self.background.copy()
-
-            if self.config.bg_centered:
-                self.with_background += self.final
-            else:
-                self.with_background[offset_min:offset_max, offset_min:offset_max] += self.final
+            self.with_background[offset_min:offset_max, offset_min:offset_max] += self.final
             
             self.final = self.with_background.copy()
 
     def crop_for_network(self, size):
 
-        half_size = int(size/2)
-        xc = int(self.final.shape[0]/2)
-        yc = int(self.final.shape[1]/2)
+        if self.final.shape[0] > size:
 
-        self.final_crop = self.final[yc-half_size:yc+half_size, xc-half_size:xc+half_size]
+            half_size = int(size/2)    
+            xc = int(self.final.shape[0]/2)
+            yc = int(self.final.shape[1]/2)
+
+            self.final_crop = self.final[yc-half_size:yc+half_size, xc-half_size:xc+half_size]
+        else:
+            self.final_crop = self.final
 
 
     def writeto(self, filepath, data, overwrite=False):
