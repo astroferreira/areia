@@ -27,7 +27,7 @@ from matplotlib import pyplot as plt
 def zoom_contents(image, scale, image_axes=[0, 1], method='linear', conserve_flux=True, fill_value=0):
     """
        Change the scale with fixed image size. Implemmentation by Aiden Rolfe (aidenrolfe) and
-       Stephen Bamford (bamford) from https://github.com/aidenrolfe/ARG.
+       Steven Bamford (bamford) from https://github.com/aidenrolfe/ARG.
 
        Suggestion by Bamford in Issue https://github.com/astroferreira/areia/issues/1
     """
